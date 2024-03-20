@@ -1,6 +1,6 @@
 
 DATA_ROOT=data
-INST_REL_DIR=custom_data_example/co3d_chair
+INST_REL_DIR=custom_data_example/toy
 FORCE_RERUN=True
 
 # Coarse decomposition

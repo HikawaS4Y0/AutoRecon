@@ -1,0 +1,6 @@
+:job_id:01000000
+:actor_name:FeatureActor
+2024-03-15 16:44:52.693 | INFO     | loftr.tools.hloc_match_features:build_pseudo_features:257 - Finished generaing pseudo features. (40 in total.)
+2024-03-15 16:44:52.720 | INFO     | loftr.tools.hloc_match_features:process_instance:383 - [toy] LoFTRMatchWorker started (515 pairs to be matched)
+[32m2024-03-15 16:44:52.720[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36m_run_loftr[0m:[36m334[0m | - [1mMatching [custom_data_example/toy] w/ LoFTR...[0m
+[32m2024-03-15 16:47:31.225[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36mrun[0m:[36m301[0m | - [1m[job_id:0 | inst_id:custom_data_example/toy] features & matches saved![0m
