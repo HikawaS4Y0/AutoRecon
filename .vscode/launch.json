@@ -5,6 +5,23 @@
   "version": "0.2.0",
   "configurations": [
     {
+      "name":"Python 调试程序: texture.py",
+      "type":"debugpy",
+      "request":"launch",
+      "program":"scripts/texture.py",
+      "env": {
+        "CUDA_VISIBLE_DEVICES": "8",
+        "LOG_DIR" : "outputs/neusfacto-wbg-reg_sep-plane-nerf_60k_plane-h-ratio-0.3_demo_cvpr/neus-facto-wbg-reg_sep-plane-nerf/2024-03-15_165712",
+        "MC_RES" : "512", 
+      },
+      "console":"integratedTerminal",
+      "args": ["--load-config", "outputs/neusfacto-wbg-reg_sep-plane-nerf_60k_plane-h-ratio-0.3_demo_cvpr/neus-facto-wbg-reg_sep-plane-nerf/2024-03-15_165712/config.yml",
+               "--input-mesh-filename", "$outputs/neusfacto-wbg-reg_sep-plane-nerf_60k_plane-h-ratio-0.3_demo_cvpr/neus-facto-wbg-reg_sep-plane-nerf/2024-03-15_165712/extracted_mesh_res-512.ply",
+               "--output-dir", "./textures", "--target_num_faces", "50000"
+      ]
+    },
+
+    {
       "name": "Launch Chrome against localhost",
       "request": "launch",
       "type": "chrome",

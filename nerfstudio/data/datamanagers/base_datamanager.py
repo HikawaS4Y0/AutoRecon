@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """
 Datamanager.
 """
@@ -19,7 +20,7 @@ from __future__ import annotations
 
 from abc import abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional, Tuple, Type, Union
+from typing import Any, Dict, List, Optional, Tuple, Type, Union
 
 import torch
 import tyro
@@ -34,7 +35,6 @@ from nerfstudio.cameras.camera_optimizers import CameraOptimizerConfig
 from nerfstudio.cameras.cameras import CameraType
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.configs.base_config import InstantiateConfig
-from nerfstudio.data.dataparsers.autorecon_dataparser import AutoReconDataParserConfig
 from nerfstudio.data.dataparsers.blender_dataparser import BlenderDataParserConfig
 from nerfstudio.data.dataparsers.dnerf_dataparser import DNeRFDataParserConfig
 from nerfstudio.data.dataparsers.friends_dataparser import FriendsDataParserConfig
@@ -42,9 +42,11 @@ from nerfstudio.data.dataparsers.heritage_dataparser import HeritageDataParserCo
 from nerfstudio.data.dataparsers.instant_ngp_dataparser import (
     InstantNGPDataParserConfig,
 )
+from nerfstudio.data.dataparsers.mipnerf360_dataparser import Mipnerf360DataParserConfig
+from nerfstudio.data.dataparsers.autorecon_dataparser import AutoReconDataParserConfig
 from nerfstudio.data.dataparsers.monosdf_dataparser import MonoSDFDataParserConfig
 from nerfstudio.data.dataparsers.nerfstudio_dataparser import NerfstudioDataParserConfig
-from nerfstudio.data.dataparsers.nuscenes_dataparser import NuScenesDataParserConfig
+# from nerfstudio.data.dataparsers.nuscenes_dataparser import NuScenesDataParserConfig
 from nerfstudio.data.dataparsers.phototourism_dataparser import (
     PhototourismDataParserConfig,
 )
@@ -60,7 +62,6 @@ from nerfstudio.data.utils.dataloaders import (
 from nerfstudio.data.utils.nerfstudio_collate import nerfstudio_collate
 from nerfstudio.engine.callbacks import TrainingCallback, TrainingCallbackAttributes
 from nerfstudio.model_components.ray_generators import RayGenerator
-from nerfstudio.utils import profiler
 from nerfstudio.utils.images import BasicImages
 from nerfstudio.utils.misc import IterableWrapper
 
@@ -70,10 +71,11 @@ AnnotatedDataParserUnion = tyro.conf.OmitSubcommandPrefixes[  # Omit prefixes of
     tyro.extras.subcommand_type_from_defaults(
         {
             "nerfstudio-data": NerfstudioDataParserConfig(),
+            "mipnerf360-data": Mipnerf360DataParserConfig(),
             "blender-data": BlenderDataParserConfig(),
             "friends-data": FriendsDataParserConfig(),
             "instant-ngp-data": InstantNGPDataParserConfig(),
-            "nuscenes-data": NuScenesDataParserConfig(),
+            # "nuscenes-data": NuScenesDataParserConfig(),
             "record3d-data": Record3DDataParserConfig(),
             "dnerf-data": DNeRFDataParserConfig(),
             "phototourism-data": PhototourismDataParserConfig(),
@@ -269,10 +271,6 @@ class VanillaDataManagerConfig(InstantiateConfig):
     train_num_times_to_repeat_images: int = -1
     """When not training on all images, number of iterations before picking new
     images. If -1, never pick new images."""
-    train_mask_sample_start: Optional[int] = None
-    """if not None, start mask-guided sampling at this iteration."""
-    train_mask_sample_ratio: Optional[float] = None
-    """If not None, specifies the ratio of rays to sample from the mask."""
     eval_num_rays_per_batch: int = 1024
     """Number of rays per batch to use per eval iteration."""
     eval_num_images_to_sample_from: int = -1
@@ -282,23 +280,15 @@ class VanillaDataManagerConfig(InstantiateConfig):
     new images. If -1, never pick new images."""
     eval_image_indices: Optional[Tuple[int, ...]] = (0,)
     """Specifies the image indices to use during eval; if None, uses all."""
-    eval_rand_image_indices: Optional[Tuple[int, ...]] = None
     camera_optimizer: CameraOptimizerConfig = CameraOptimizerConfig()
     """Specifies the camera pose optimizer used during training. Helpful if poses are noisy, such as for data from
     Record3D."""
-    collate_fn: Callable = nerfstudio_collate  # staticmethod(nerfstudio_collate)
-    # collate_fn = staticmethod(nerfstudio_collate)
+    collate_fn = staticmethod(nerfstudio_collate)
     """Specifies the collate function to use for the train and eval dataloaders."""
     camera_res_scale_factor: float = 1.0
     """The scale factor for scaling spatial data such as images, mask, semantics
     along with relevant information about camera intrinsics
     """
-    eval_camera_res_scale_factor: Optional[float] = None
-    """A dedicate scale_factor for evaluation."""
-    train_num_workers_per_rank: int = 4
-    """num_workers = world_size * train_num_workers_per_rank"""
-    eval_num_workers_per_rank: int = 2
-    """num_workers = world_size * eval_num_workers_per_rank"""
 
 
 class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
@@ -349,11 +339,9 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
 
     def create_eval_dataset(self) -> InputDataset:
         """Sets up the data loaders for evaluation"""
-        _eval_scale_factor = self.config.eval_camera_res_scale_factor
-        scale_factor = _eval_scale_factor if _eval_scale_factor is not None else self.config.camera_res_scale_factor
         return GeneralizedDataset(
             dataparser_outputs=self.dataparser.get_dataparser_outputs(split=self.test_split),
-            scale_factor=scale_factor,
+            scale_factor=self.config.camera_res_scale_factor,
         )
 
     def _get_pixel_sampler(  # pylint: disable=no-self-use
@@ -378,23 +366,25 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_images_to_sample_from=self.config.train_num_images_to_sample_from,
             num_times_to_repeat_images=self.config.train_num_times_to_repeat_images,
             device=self.device,
-            num_workers=self.world_size * self.config.train_num_workers_per_rank,
+            num_workers=self.world_size * 4,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
         )
         self.iter_train_image_dataloader = iter(self.train_image_dataloader)
-        self.train_pixel_sampler = self._get_pixel_sampler(
-            self.train_dataset,
-            self.config.train_num_rays_per_batch,
-            mask_sample_start=self.config.train_mask_sample_start,
-            mask_sample_ratio=self.config.train_mask_sample_ratio,
-        )
+        self.train_pixel_sampler = self._get_pixel_sampler(self.train_dataset, self.config.train_num_rays_per_batch)
         self.train_camera_optimizer = self.config.camera_optimizer.setup(
             num_cameras=self.train_dataset.cameras.size, device=self.device
         )
         self.train_ray_generator = RayGenerator(
             self.train_dataset.cameras.to(self.device),
             self.train_camera_optimizer,
+        )
+        # for loading full images
+        self.fixed_indices_train_dataloader = FixedIndicesEvalDataloader(
+            input_dataset=self.train_dataset,
+            device=self.device,
+            num_workers=self.world_size * 2,
+            shuffle=False,
         )
 
     def setup_eval(self):
@@ -406,7 +396,7 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
             num_images_to_sample_from=self.config.eval_num_images_to_sample_from,
             num_times_to_repeat_images=self.config.eval_num_times_to_repeat_images,
             device=self.device,
-            num_workers=self.world_size * self.config.eval_num_workers_per_rank,
+            num_workers=self.world_size * 2,
             pin_memory=True,
             collate_fn=self.config.collate_fn,
         )
@@ -419,25 +409,23 @@ class VanillaDataManager(DataManager):  # pylint: disable=abstract-method
         # for loading full images
         self.fixed_indices_eval_dataloader = FixedIndicesEvalDataloader(
             input_dataset=self.eval_dataset,
-            image_indices=self.config.eval_image_indices,
             device=self.device,
-            num_workers=self.world_size * self.config.eval_num_workers_per_rank,
+            num_workers=self.world_size * 2,
             shuffle=False,
         )
         self.eval_dataloader = RandIndicesEvalDataloader(
             input_dataset=self.eval_dataset,
-            image_indices=self.config.eval_rand_image_indices,
+            image_indices=self.config.eval_image_indices,
             device=self.device,
-            num_workers=self.world_size * self.config.eval_num_workers_per_rank,
+            num_workers=self.world_size * 2,
             shuffle=False,
         )
 
-    @profiler.time_function
     def next_train(self, step: int) -> Tuple[RayBundle, Dict]:
         """Returns the next batch of data from the train dataloader."""
         self.train_count += 1
         image_batch = next(self.iter_train_image_dataloader)
-        batch = self.train_pixel_sampler.sample(image_batch, step=step)
+        batch = self.train_pixel_sampler.sample(image_batch)
         ray_indices = batch["indices"]
         ray_bundle = self.train_ray_generator(ray_indices)
         return ray_bundle, batch

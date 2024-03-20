@@ -24,7 +24,7 @@ from typing import Dict, List, Tuple, Type
 import numpy as np
 import torch
 from torch.nn import Parameter
-from torchmetrics import PeakSignalNoiseRatio
+from torchmetrics.image import PeakSignalNoiseRatio
 from torchmetrics.functional import structural_similarity_index_measure
 from torchmetrics.image.lpip import LearnedPerceptualImagePatchSimilarity
 from typing_extensions import Literal
@@ -76,7 +76,7 @@ class NerfactoModelConfig(ModelConfig):
     """Maximum resolution of the hashmap for the base mlp."""
     log2_hashmap_size: int = 19
     """Size of the hashmap for the base mlp"""
-    num_proposal_samples_per_ray: Tuple[int] = (256, 96)
+    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for the proposal network."""
     num_nerf_samples_per_ray: int = 48
     """Number of samples per ray for the nerf network."""
@@ -105,8 +105,6 @@ class NerfactoModelConfig(ModelConfig):
     """Predicted normal loss multiplier."""
     use_proposal_weight_anneal: bool = True
     """Whether to use proposal weight annealing."""
-    use_appearance_embedding: bool = True
-    """Whether to use per-frame appearance embedding."""
     use_average_appearance_embedding: bool = True
     """Whether to use average appearance embedding or zeros for inference."""
     proposal_weights_anneal_slope: float = 10.0
@@ -143,7 +141,6 @@ class NerfactoModel(Model):
             spatial_distortion=scene_contraction,
             num_images=self.num_train_data,
             use_pred_normals=self.config.predict_normals,
-            use_appearance_embedding=self.config.use_appearance_embedding,
             use_average_appearance_embedding=self.config.use_average_appearance_embedding,
         )
 

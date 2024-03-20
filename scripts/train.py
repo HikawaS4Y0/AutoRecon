@@ -51,12 +51,12 @@ from nerfstudio.configs.method_configs import AnnotatedBaseConfigUnion
 from nerfstudio.engine.trainer import Trainer
 from nerfstudio.utils import comms, profiler
 
-CONSOLE = Console(width=120, soft_wrap=True)
+CONSOLE = Console(width=120)
 DEFAULT_TIMEOUT = timedelta(minutes=30)
 
 # speedup for when input size to model doesn't change (much)
 torch.backends.cudnn.benchmark = True  # type: ignore
-# torch.autograd.set_detect_anomaly(True)
+torch.set_float32_matmul_precision("high")
 
 
 def _find_free_port() -> str:
@@ -84,6 +84,7 @@ def train_loop(local_rank: int, world_size: int, config: cfg.Config, global_rank
         config: config file specifying training regimen
     """
     _set_random_seed(config.machine.seed + global_rank)
+    torch.cuda.set_device(local_rank)
     trainer = Trainer(config, local_rank, world_size)
     trainer.setup()
     trainer.train()
@@ -231,7 +232,6 @@ def main(config: cfg.Config) -> None:
     # print and save config
     config.print_to_terminal()
     config.save_config()
-    config.set_global()
 
     launch(
         main_func=train_loop,

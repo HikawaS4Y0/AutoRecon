@@ -37,9 +37,6 @@ warnings.filterwarnings("ignore", module="torchvision")
 
 CONSOLE = Console(width=120)
 
-CFG = None  # global config accessible by all modules
-
-
 # Pretty printing class
 class PrintableConfig:  # pylint: disable=too-few-public-methods
     """Printable Config defining str function"""
@@ -137,6 +134,8 @@ class LoggingConfig(PrintableConfig):
 class TrainerConfig(PrintableConfig):
     """Configuration for training regimen"""
 
+    sanity_check: bool = False
+    """Whether run sanity check before training start."""
     steps_per_save: int = 1000
     """Number of steps between saves."""
     steps_per_eval_batch: int = 500
@@ -158,14 +157,12 @@ class TrainerConfig(PrintableConfig):
     """Optionally specify a pre-trained model directory to load from."""
     load_step: Optional[int] = None
     """Optionally specify model step to load from; if none, will find most recent model in load_dir."""
-    load_pipeline_ckpt_only: bool = False
-    """Only load pipeline checkpoints. Ignore optimizer, grad_sacler, ..."""
-    load_pipeline_ckpt_strict: bool = True
-    """Whether or not to load pipeline ckpt strictly."""
     load_config: Optional[Path] = None
     """Optionally specify model config to load from; if none, will use the default config?"""
     load_scheduler: bool = True
     """Whether to load the lr scheduler state_dict if exists"""
+    accumulate_grad_steps: int = 1
+    """Number of gradient steps to accumulate before taking an optimizer step."""
 
 
 # Viewer related configs
@@ -193,9 +190,6 @@ class ViewerConfig(PrintableConfig):
     actually used in training/evaluation. If -1, display all."""
     quit_on_train_completion: bool = False
     """Whether to kill the training job when it has completed. Note this will stop rendering in the viewer."""
-    skip_openrelay: bool = False
-    """Avoid using openrelay to communicate with the viewer. Try disabling if you have trouble
-    connecting to the viewer"""
 
 
 from nerfstudio.engine.optimizers import OptimizerConfig
@@ -238,17 +232,6 @@ class Config(PrintableConfig):
     """Which visualizer to use."""
     data: Optional[Path] = None
     """Alias for --pipeline.datamanager.dataparser.data"""
-
-    def set_global(self) -> None:
-        """
-        Example:
-            from nerfstudio.configs import base_config
-            base_config.CFG.xxx()
-        FIXME: this is useless if the original CFG is already imported by other module
-        TODO: make the global config read-only
-        """
-        global CFG
-        CFG = self
 
     def is_viewer_enabled(self) -> bool:
         """Checks if a viewer is enabled."""

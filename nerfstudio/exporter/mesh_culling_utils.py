@@ -17,7 +17,7 @@ from torch.nn import functional as F
 from nerfstudio.cameras.rays import RayBundle
 from nerfstudio.exporter.exporter_utils import Mesh
 from nerfstudio.pipelines.base_pipeline import Pipeline
-from nerfstudio.model_components.ray_samplers import Sampler, UniformSampler, DummySampler
+from nerfstudio.model_components.ray_samplers import Sampler, UniformSampler
 from nerfstudio.utils.rich_utils import get_progress
 from nerfstudio.configs.base_config import InstantiateConfig
 
@@ -116,7 +116,7 @@ class MeshCuller:
             sampler = UniformSampler(num_samples=num_samples)
         elif ray_sampler_type == "dummy":
             _log_str = "DummySampler"
-            sampler = DummySampler()
+            sampler = UniformSampler(num_samples=num_samples)
         else:
             raise ValueError(f"Unknown RaySampler type: {ray_sampler_type}")
         CONSOLE.print(f"Replace the original sampler with {_log_str}.")

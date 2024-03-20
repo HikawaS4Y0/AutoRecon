@@ -20,7 +20,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import List, Type, Tuple, Dict
-from typing_extensions import Literal
 import numpy as np
 
 import torch
@@ -33,10 +32,9 @@ from nerfstudio.engine.callbacks import (
     TrainingCallbackLocation,
 )
 from nerfstudio.field_components.field_heads import FieldHeadNames
-from nerfstudio.field_components.spatial_distortions import SceneContraction
 from nerfstudio.models.neus import NeuSModel, NeuSModelConfig
 from nerfstudio.fields.density_fields import HashMLPDensityField
-from nerfstudio.model_components.losses import interlevel_loss
+from nerfstudio.model_components.losses import interlevel_loss, interlevel_loss_zip
 from nerfstudio.model_components.ray_samplers import ProposalNetworkSampler
 from nerfstudio.utils import colormaps
 
@@ -46,13 +44,13 @@ class NeuSFactoModelConfig(NeuSModelConfig):
     """UniSurf Model Config"""
 
     _target: Type = field(default_factory=lambda: NeuSFactoModel)
-    num_proposal_samples_per_ray: Tuple[int] = (256, 96)
+    num_proposal_samples_per_ray: Tuple[int, ...] = (256, 96)
     """Number of samples per ray for the proposal network."""
     num_neus_samples_per_ray: int = 48
     """Number of samples per ray for the nerf network."""
     proposal_update_every: int = 5
     """Sample every n steps after the warmup"""
-    proposal_warmup: int = 5000  # FIXME: not used
+    proposal_warmup: int = 5000
     """Scales n from 1 to proposal_update_every over this many steps"""
     num_proposal_iterations: int = 2
     """Number of proposal network iterations."""
@@ -75,19 +73,29 @@ class NeuSFactoModelConfig(NeuSModelConfig):
     """Max num iterations for the annealing function."""
     use_single_jitter: bool = True
     """Whether use single jitter or not for the proposal networks."""
-    proposal_net_spatial_normalization_region: Literal["full", "fg"] = "full"
-    """if "full", normalize [-2, 2] into [0, 1], otherwise, normalize [-1, 1] into [0, 1]."""
-    proposal_use_uniform_sampler: bool = True
-    """whether to use UniformSampler as the initial sampler for the proposal network.
-    It's better to use UniformSampler if the region for the proposal network to model
-    is bounded and small (e.g., inside a object bbox). UniformLinDispPiecewiseSampler is more
-    appropriate, if the proposal network needs to model a big or unbounded region.
-    """
-    proposal_net_use_separate_contraction: bool = False
-    """use a separate contraction for the proposal network (modeling both fg & bg regions)."""
-    proposal_net_contraction_scale_factor: float = 1.0
-    """scale_factor for the separate SceneContraction of the proposal network."""
-    num_proposal_samples_per_ray_for_eikonal_loss: int = 0
+    use_anneal_beta: bool = False
+    """whether to anneal beta of neus or not similar to bakedsdf"""
+    beta_anneal_max_num_iters: int = 1000_000
+    """max num iterations for the annealing function of beta"""
+    beta_anneal_init: float = 0.05
+    """initial beta for annealing function"""
+    beta_anneal_end: float = 0.0002
+    """final beta for annealing function"""
+    # TODO move to base model config since it can be used in all models
+    enable_progressive_hash_encoding: bool = False
+    """whether to use progressive hash encoding"""
+    enable_numerical_gradients_schedule: bool = False
+    """whether to use numerical gradients delta schedule"""
+    enable_curvature_loss_schedule: bool = False
+    """whether to use curvature loss weight schedule"""
+    curvature_loss_multi: float = 0.0
+    """curvature loss weight"""
+    curvature_loss_warmup_steps: int = 20_000
+    """curvature loss warmup steps"""
+    level_init: int = 4
+    """initial level of multi-resolution hash encoding"""
+    steps_per_level: int = 10_000
+    """steps per level of multi-resolution hash encoding"""
 
 
 class NeuSFactoModel(NeuSModel):
@@ -105,49 +113,35 @@ class NeuSFactoModel(NeuSModel):
 
         self.density_fns = []
         num_prop_nets = self.config.num_proposal_iterations
-        
         # Build the proposal network(s)
-        if self.config.proposal_net_use_separate_contraction:
-            proposal_contraction = SceneContraction(
-                order=float("inf"), scale_factor=self.config.proposal_net_contraction_scale_factor
-            )
-        else:
-            proposal_contraction = self.scene_contraction
-        
         self.proposal_networks = torch.nn.ModuleList()
         if self.config.use_same_proposal_network:
             assert len(self.config.proposal_net_args_list) == 1, "Only one proposal network is allowed."
             prop_net_args = self.config.proposal_net_args_list[0]
             network = HashMLPDensityField(
-                self.scene_box.aabb, spatial_distortion=proposal_contraction, **prop_net_args,
-                spatial_normalization_region=self.config.proposal_net_spatial_normalization_region,
+                self.scene_box.aabb, spatial_distortion=self.scene_contraction, **prop_net_args
             )
             self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for _ in range(num_prop_nets)])
         else:
             for i in range(num_prop_nets):
-                prop_net_args = self.config.proposal_net_args_list[
-                    min(i, len(self.config.proposal_net_args_list) - 1)]
+                prop_net_args = self.config.proposal_net_args_list[min(i, len(self.config.proposal_net_args_list) - 1)]
                 network = HashMLPDensityField(
-                    self.scene_box.aabb, spatial_distortion=proposal_contraction, **prop_net_args,
-                    spatial_normalization_region=self.config.proposal_net_spatial_normalization_region,
+                    self.scene_box.aabb,
+                    spatial_distortion=self.scene_contraction,
+                    **prop_net_args,
                 )
                 self.proposal_networks.append(network)
             self.density_fns.extend([network.density_fn for network in self.proposal_networks])
 
-        # proposal network scheduler
-        # TODO: previously trained NeuSFacto models use update_scheduler=-1 -> might lead to performance change
-        update_schedule = lambda step: np.clip(
-            np.interp(step, [0, self.config.proposal_warmup], [0, self.config.proposal_update_every]),
-            1,
-            self.config.proposal_update_every,
-        )
-        
+        # update proposal network every iterations
+        update_schedule = lambda step: -1
+
         self.proposal_sampler = ProposalNetworkSampler(
             num_nerf_samples_per_ray=self.config.num_neus_samples_per_ray,
             num_proposal_samples_per_ray=self.config.num_proposal_samples_per_ray,
             num_proposal_network_iterations=self.config.num_proposal_iterations,
-            use_uniform_sampler=self.config.proposal_use_uniform_sampler,
+            use_uniform_sampler=False,
             single_jitter=self.config.use_single_jitter,
             update_sched=update_schedule,
         )
@@ -188,18 +182,112 @@ class NeuSFactoModel(NeuSModel):
                 )
             )
 
+        if self.config.use_anneal_beta:
+            # anneal the beta of volsdf before each training iterations
+            M = self.config.beta_anneal_max_num_iters
+            beta_init = self.config.beta_anneal_init
+            beta_end = self.config.beta_anneal_end
+
+            def set_beta(step):
+                # bakedsdf's beta schedule adapted to neus
+                train_frac = np.clip(step / M, 0, 1)
+                beta = beta_init / (1 + (beta_init - beta_end) / beta_end * (train_frac**0.8))
+                beta = np.log(1.0 / beta) / 10.0
+                self.field.deviation_network.variance.data[...] = beta
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=set_beta,
+                )
+            )
+
+        # read the hash encoding parameters from field
+        level_init = self.config.level_init
+        # schedule the delta in numerical gradients computation
+        num_levels = self.field.num_levels
+        max_res = self.field.max_res
+        base_res = self.field.base_res
+        growth_factor = self.field.growth_factor
+
+        steps_per_level = self.config.steps_per_level
+
+        init_delta = 1.0 / base_res
+        end_delta = 1.0 / max_res
+
+        # compute the delta based on level
+        if self.config.enable_numerical_gradients_schedule:
+
+            def set_delta(step):
+                delta = 1.0 / (base_res * growth_factor ** (step / steps_per_level))
+                delta = max(1.0 / (4.0 * max_res), delta)
+                self.field.set_numerical_gradients_delta(
+                    delta * 4.0
+                )  # TODO because we divide 4 to normalize points to [0, 1]
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=set_delta,
+                )
+            )
+
+        # schedule the current level of multi-resolution hash encoding
+        if self.config.enable_progressive_hash_encoding:
+
+            def set_mask(step):
+                # TODO make this consistent with delta schedule
+                level = int(step / steps_per_level) + 1
+                level = max(level, level_init)
+                self.field.update_mask(level)
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=set_mask,
+                )
+            )
+        # schedule the curvature loss weight
+        # linear warmup for 5000 steps to 5e-4 and then decay as delta
+        self.curvature_loss_multi_factor = 1.0
+        if self.config.enable_curvature_loss_schedule:
+
+            def set_curvature_loss_mult_factor(step):
+                if step < self.config.curvature_loss_warmup_steps:
+                    factor = step / self.config.curvature_loss_warmup_steps
+                else:
+                    delta = 1.0 / (
+                        base_res * growth_factor ** ((step - self.config.curvature_loss_warmup_steps) / steps_per_level)
+                    )
+                    delta = max(1.0 / (max_res * 10.0), delta)
+                    factor = delta / init_delta
+
+                self.curvature_loss_multi_factor = factor
+
+            callbacks.append(
+                TrainingCallback(
+                    where_to_run=[TrainingCallbackLocation.BEFORE_TRAIN_ITERATION],
+                    update_every_num_iters=1,
+                    func=set_curvature_loss_mult_factor,
+                )
+            )
+
+        # TODO switch to analytic gradients after delta is small enough?
+
         return callbacks
 
     def sample_and_forward_field(self, ray_bundle: RayBundle):
-        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(
-            ray_bundle, density_fns=self.density_fns
-        )
+        ray_samples, weights_list, ray_samples_list = self.proposal_sampler(ray_bundle, density_fns=self.density_fns)
 
         field_outputs = self.field(ray_samples, return_alphas=True)
-        weights, transmittance = ray_samples.get_weights_and_transmittance_from_alphas(
-            field_outputs[FieldHeadNames.ALPHA]
-        )
-        bg_transmittance = transmittance[:, -1, :]
+
+        if self.config.background_model != "none":
+            field_outputs = self.forward_background_field_and_merge(ray_samples, field_outputs)
+
+        weights = ray_samples.get_weights_from_alphas(field_outputs[FieldHeadNames.ALPHA])
 
         weights_list.append(weights)
         ray_samples_list.append(ray_samples)
@@ -208,7 +296,6 @@ class NeuSFactoModel(NeuSModel):
             "ray_samples": ray_samples,
             "field_outputs": field_outputs,
             "weights": weights,
-            "bg_transmittance": bg_transmittance,
             "weights_list": weights_list,
             "ray_samples_list": ray_samples_list,
         }
@@ -218,10 +305,37 @@ class NeuSFactoModel(NeuSModel):
         loss_dict = super().get_loss_dict(outputs, batch, metrics_dict)
 
         if self.training:
-            self._compute_interlevel_loss(outputs, loss_dict)
-            self._compute_proposal_eikonal_loss(outputs, loss_dict)
+            loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss_zip(
+                outputs["weights_list"], outputs["ray_samples_list"]
+            )
+
+        # curvature loss
+        if self.training and self.config.curvature_loss_multi > 0.0:
+            delta = self.field.numerical_gradients_delta
+            centered_sdf = outputs["field_outputs"][FieldHeadNames.SDF]
+            sourounding_sdf = outputs["field_outputs"]["sampled_sdf"]
+
+            sourounding_sdf = sourounding_sdf.reshape(centered_sdf.shape[:2] + (3, 2))
+
+            # (a - b)/d - (b -c)/d = (a + c - 2b)/d
+            # ((a - b)/d - (b -c)/d)/d = (a + c - 2b)/(d*d)
+            curvature = (sourounding_sdf.sum(dim=-1) - 2 * centered_sdf) / (delta * delta)
+            loss_dict["curvature_loss"] = (
+                torch.abs(curvature).mean() * self.config.curvature_loss_multi * self.curvature_loss_multi_factor
+            )
 
         return loss_dict
+
+    def get_metrics_dict(self, outputs, batch) -> Dict:
+        metrics_dict = super().get_metrics_dict(outputs, batch)
+
+        if self.training:
+            # training statics
+            metrics_dict["activated_encoding"] = self.field.hash_encoding_mask.mean().item()
+            metrics_dict["numerical_gradients_delta"] = self.field.numerical_gradients_delta
+            metrics_dict["curvature_loss_multi"] = self.curvature_loss_multi_factor * self.config.curvature_loss_multi
+
+        return metrics_dict
 
     def get_image_metrics_and_images(
         self, outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]
@@ -229,53 +343,10 @@ class NeuSFactoModel(NeuSModel):
         metrics_dict, images_dict = super().get_image_metrics_and_images(outputs, batch)
         for i in range(self.config.num_proposal_iterations):
             key = f"prop_depth_{i}"
-            # TODO: set depth[accumulation < 0.1] = depth[accumulation >= 0.1].min()
             prop_depth_i = colormaps.apply_depth_colormap(
                 outputs[key],
-                accumulation=outputs["accumulation"],  # NOTE: this would remove bg depths
+                accumulation=outputs["accumulation"],
             )
             images_dict[key] = prop_depth_i
 
         return metrics_dict, images_dict
-
-    def _compute_interlevel_loss(self, outputs: Dict[str, torch.Tensor], loss_dict: Dict[str, torch.Tensor]):
-        weights_list, ray_samples_list = self._get_interlevel_loss_inputs(outputs)
-        interlevel_loss_val = interlevel_loss(weights_list, ray_samples_list)
-        loss_dict["interlevel_loss"] = self.config.interlevel_loss_mult * interlevel_loss_val
-    
-    def _get_interlevel_loss_inputs(self, outputs):
-        weights_list = outputs["weights_list"]  # (n_rays, n_samples, 1)
-        ray_samples_list = outputs["ray_samples_list"]  # (n_rays, n_samples)
-        
-        if not self.handle_no_intersect_rays:
-            return weights_list, ray_samples_list
-        
-        # ignore rays not intersecting the fg aabb
-        no_intersect_mask = outputs["no_intersect_mask"][..., 0]  # (n_rays, )
-        weights_list = [weights[~no_intersect_mask] for weights in weights_list]
-        ray_samples_list = [ray_samples[~no_intersect_mask] for ray_samples in ray_samples_list]
-        
-        return weights_list, ray_samples_list
-
-    def _compute_proposal_eikonal_loss(
-        self,
-        outputs: Dict[str, torch.Tensor],
-        loss_dict: Dict[str, torch.Tensor]
-    ):
-        """sample additional ray samples from the proposal samples and compute the eikonal loss.
-        this aims to regularize the internal geometry of the reconstruction.
-        """
-        n_eikonal_samples = self.config.num_proposal_samples_per_ray_for_eikonal_loss
-        if n_eikonal_samples <= 0:
-            return
-        
-        _, ray_samples_list = self._get_interlevel_loss_inputs(outputs)  # TODO: called twice per iter, should cache results
-        ray_samples_list = [s.frustums.get_start_positions() for s in ray_samples_list[:-1]]
-        # TODO: maybe it's better to just sample from the uniform samples?
-        ray_samples = torch.cat(ray_samples_list, dim=1)  # (n_rays, n_samples, 3)
-        n_rays, n_samples = ray_samples.shape[:2]
-        if n_eikonal_samples < n_samples:  # sample with replacement for speed
-            _inds = torch.randint(n_samples, (n_rays, n_eikonal_samples), device=ray_samples.device)
-            ray_samples = ray_samples.gather(1, _inds[..., None].expand(-1, -1, 3))
-        eik_grads = self.field.gradient(ray_samples.view(-1, 3))  # (*, 3)
-        loss_dict["proposal_eikonal_loss"] = ((eik_grads.norm(2, dim=-1) - 1) ** 2).mean() * self.config.eikonal_loss_mult

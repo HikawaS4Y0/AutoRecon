@@ -35,7 +35,6 @@ from rich.progress import (
 from torch import nn
 from torch.nn import Parameter
 from torch.nn.parallel import DistributedDataParallel as DDP
-from torchinfo import summary
 from typing_extensions import Literal
 
 from nerfstudio.configs import base_config as cfg
@@ -236,9 +235,6 @@ class VanillaPipeline(Pipeline):
             world_size=world_size,
             local_rank=local_rank,
         )
-        # print(self._model)
-        # model_stats = summary(self._model, col_names=["kernel_size", "num_params"])
-        # TODO: write model_stats to file (pass in the exp dir from trainer)
         self.model.to(device)
 
         self.world_size = world_size
@@ -274,7 +270,7 @@ class VanillaPipeline(Pipeline):
                 self.datamanager.get_param_groups()[camera_opt_param_group][0].data[:, 3:].norm()
             )
 
-        loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict, step=step)  # FIXME: donnot use step here
+        loss_dict = self.model.get_loss_dict(model_outputs, batch, metrics_dict)
 
         return model_outputs, loss_dict, metrics_dict
 
@@ -310,8 +306,9 @@ class VanillaPipeline(Pipeline):
             step: current iteration step
         """
         self.eval()
+        torch.cuda.empty_cache()
         image_idx, camera_ray_bundle, batch = self.datamanager.next_eval_image(step)
-        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)  # (h, w, c)
+        outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
         metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
         assert "image_idx" not in metrics_dict
         metrics_dict["image_idx"] = image_idx
@@ -329,6 +326,7 @@ class VanillaPipeline(Pipeline):
         """
         self.eval()
         metrics_dict_list = []
+        images_dict_list = []
         num_images = len(self.datamanager.fixed_indices_eval_dataloader)
         with Progress(
             TextColumn("[progress.description]{task.description}"),
@@ -351,13 +349,14 @@ class VanillaPipeline(Pipeline):
                 height, width = camera_ray_bundle.shape
                 num_rays = height * width
                 outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
-                metrics_dict, _ = self.model.get_image_metrics_and_images(outputs, batch)
+                metrics_dict, images_dict = self.model.get_image_metrics_and_images(outputs, batch)
                 assert "num_rays_per_sec" not in metrics_dict
                 metrics_dict["num_rays_per_sec"] = num_rays / (time() - inner_start)
                 fps_str = "fps"
                 assert fps_str not in metrics_dict
                 metrics_dict[fps_str] = metrics_dict["num_rays_per_sec"] / (height * width)
                 metrics_dict_list.append(metrics_dict)
+                images_dict_list.append(images_dict)
                 progress.advance(task)
         # average the metrics list
         metrics_dict = {}
@@ -366,9 +365,65 @@ class VanillaPipeline(Pipeline):
                 torch.mean(torch.tensor([metrics_dict[key] for metrics_dict in metrics_dict_list]))
             )
         self.train()
-        return metrics_dict
+        return metrics_dict, images_dict_list
 
-    def load_pipeline(self, loaded_state: Dict[str, Any], strict=True) -> None:
+    @profiler.time_function
+    def get_visibility_mask(
+        self,
+        coarse_grid_resolution: int = 512,
+        valid_points_thres: float = 0.005,
+        sub_sample_factor: int = 8,
+    ):
+        """Iterate over all the images in the eval dataset and get the average.
+
+        Returns:
+            metrics_dict: dictionary of metrics
+        """
+        self.eval()
+
+        coarse_mask = torch.ones(
+            (1, 1, coarse_grid_resolution, coarse_grid_resolution, coarse_grid_resolution), requires_grad=True
+        ).to(self.device)
+        coarse_mask.retain_grad()
+
+        num_images = len(self.datamanager.fixed_indices_train_dataloader)
+        with Progress(
+            TextColumn("[progress.description]{task.description}"),
+            BarColumn(),
+            TimeElapsedColumn(),
+            MofNCompleteColumn(),
+            transient=True,
+        ) as progress:
+            task = progress.add_task("[green]Evaluating all eval images...", total=num_images)
+            for camera_ray_bundle, batch in self.datamanager.fixed_indices_train_dataloader:
+                isbasicimages = False
+                if isinstance(
+                    batch["image"], BasicImages
+                ):  # If this is a generalized dataset, we need to get image tensor
+                    isbasicimages = True
+                    batch["image"] = batch["image"].images[0]
+                    camera_ray_bundle = camera_ray_bundle.reshape((*batch["image"].shape[:-1],))
+                # downsample by factor of 4 to speed up
+                camera_ray_bundle = camera_ray_bundle[::sub_sample_factor, ::sub_sample_factor]
+                height, width = camera_ray_bundle.shape
+                outputs = self.model.get_outputs_for_camera_ray_bundle(camera_ray_bundle)
+                ray_points = outputs["ray_points"].reshape(height, width, -1, 3)
+                weights = outputs["weights"]
+
+                valid_points = ray_points.reshape(-1, 3)[weights.reshape(-1) > valid_points_thres]
+                valid_points = valid_points * 0.5  # normalize from [-2, 2] to [-1, 1]
+                # update mask based on ray samples
+                with torch.enable_grad():
+                    out = torch.nn.functional.grid_sample(coarse_mask, valid_points[None, None, None])
+                    out.sum().backward()
+                progress.advance(task)
+
+        coarse_mask = (coarse_mask.grad > 0.0001).float()
+
+        self.train()
+        return coarse_mask
+
+    def load_pipeline(self, loaded_state: Dict[str, Any]) -> None:
         """Load the checkpoint from the given path
 
         Args:
@@ -381,13 +436,7 @@ class VanillaPipeline(Pipeline):
             state.pop("datamanager.train_ray_generator.pose_optimizer.pose_adjustment", None)
             state.pop("datamanager.eval_ray_generator.image_coords", None)
             state.pop("datamanager.eval_ray_generator.pose_optimizer.pose_adjustment", None)
-        elif not strict:
-            # TODO: is it ok? why do we save image_coords anyway?
-            state.pop("datamanager.train_ray_generator.image_coords", None)
-            state.pop("datamanager.eval_ray_generator.image_coords", None)
-        
-        # TODO: print unloaded state_dict keys
-        self.load_state_dict(state, strict=strict)  # type: ignore
+        self.load_state_dict(state)  # type: ignore
 
     def get_training_callbacks(
         self, training_callback_attributes: TrainingCallbackAttributes

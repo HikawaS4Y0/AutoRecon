@@ -33,7 +33,7 @@ from nerfstudio.configs import base_config as cfg
 from nerfstudio.utils.decorators import check_main_thread, decorate_all
 from nerfstudio.utils.printing import human_format
 
-CONSOLE = Console(width=120, soft_wrap=True)
+CONSOLE = Console(width=120)
 to8b = lambda x: (255 * torch.clamp(x, min=0, max=1)).to(torch.uint8)
 EVENT_WRITERS = []
 EVENT_STORAGE = []
@@ -389,7 +389,7 @@ class LocalWriter:
             if not self.has_printed and self.config.max_log_size:
                 CONSOLE.log(
                     f"Printing max of {self.config.max_log_size} lines. "
-                    "Set flag çççç[yellow]--logging.local-writer.max-log-size=0[/yellow] "
+                    "Set flag [yellow]--logging.local-writer.max-log-size=0[/yellow] "
                     "to disable line wrapping."
                 )
             latest_map, new_key = self._consolidate_events()

@@ -123,6 +123,9 @@ class NeuSFactoRegModel(NeuSFactoModel):
         samples_and_field_outputs = super().sample_and_forward_field(ray_bundle)
 
         # sample additional points on top of the bottom plane
+        if not ray_bundle.metadata:
+            return samples_and_field_outputs
+     
         mask = ray_bundle.metadata["bottom_intersect_mask"][..., 0]  # (n,)
         if not mask.any():
             return samples_and_field_outputs
