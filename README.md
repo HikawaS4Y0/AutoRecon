@@ -9,7 +9,7 @@
 > CVPR 2023
 
 # About
-This is a refactor version of the [AutoRecon](https://zju3dv.github.io/autorecon) project based on the NeRFStudio and the SDFStudio codebase. We separate the project into two parts. The coarse decomposition part is implemented in the [AutoDecomp](https://github.com/zju3dv/AutoDecomp) repo, which can be used as a general tool for 3D object discovery and preprocessing casual captures for object reconstruction. The neural surface reconstruction part is implemented here.
+This is a refactor version of the [AutoRecon](https://zju3dv.github.io/autorecon) project based on the NeRFStudio and the SDFStudio codebase. We separate the project into two parts. The coarse decomposition part is implemented in the [AutoDecomp](https://github.com/zju3dv/AutoDecomp) repo, which can be used as a general tool for 3D object discov ery and preprocessing casual captures for object reconstruction. The neural surface reconstruction part is implemented here.
 
 
 # Installation

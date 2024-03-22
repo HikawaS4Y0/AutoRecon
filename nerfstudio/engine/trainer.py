@@ -131,6 +131,7 @@ class Trainer:
     def train(self) -> None:
         """Train the model."""
         assert self.pipeline.datamanager.train_dataset is not None, "Missing DatsetInputs"
+
         self._init_viewer_state()
         with TimeWriter(writer, EventName.TOTAL_TRAIN_TIME):
             num_iterations = self.config.trainer.max_num_iterations
@@ -258,26 +259,17 @@ class Trainer:
             if load_step is None:
                 print("Loading latest checkpoint from load_dir")
                 # NOTE: this is specific to the checkpoint name format
-                load_step = sorted(int(x[x.find("-") + 1: x.find(".")]) for x in os.listdir(load_dir))[-1]
+                load_step = sorted(int(x[x.find("-") + 1 : x.find(".")]) for x in os.listdir(load_dir))[-1]
             load_path = load_dir / f"step-{load_step:09d}.ckpt"
             assert load_path.exists(), f"Checkpoint {load_path} does not exist"
             loaded_state = torch.load(load_path, map_location="cpu")
-            
-            # load pipeline ckpt
-            self.pipeline.load_pipeline(loaded_state["pipeline"], strict=self.config.trainer.load_pipeline_ckpt_strict)
-            if not self.config.trainer.load_pipeline_ckpt_strict:
-                CONSOLE.print("[yellow] Pipeline checkpoint loaded with strict=False")
-            
-            # load ckpt for step, optimizer, scheduler, grad_scaler
-            if not self.config.trainer.load_pipeline_ckpt_only:
-                self._start_step = loaded_state["step"] + 1
-                self.optimizers.load_optimizers(loaded_state["optimizers"])
-                if "schedulers" in loaded_state and self.config.trainer.load_scheduler:
-                    self.optimizers.load_schedulers(loaded_state["schedulers"])
-                self.grad_scaler.load_state_dict(loaded_state["scalers"])
-            else:
-                CONSOLE.print("[yellow] Only loading pipeline checkpoint, skipping optimizer and gradient scalar")
-            
+            self._start_step = loaded_state["step"] + 1
+            # load the checkpoints for pipeline, optimizers, and gradient scalar
+            self.pipeline.load_pipeline(loaded_state["pipeline"])
+            self.optimizers.load_optimizers(loaded_state["optimizers"])
+            if "schedulers" in loaded_state and self.config.trainer.load_scheduler:
+                self.optimizers.load_schedulers(loaded_state["schedulers"])
+            self.grad_scaler.load_state_dict(loaded_state["scalers"])
             CONSOLE.print(f"done loading checkpoint from {load_path}")
         else:
             CONSOLE.print("No checkpoints to load, training from scratch")
@@ -322,18 +314,20 @@ class Trainer:
         """
         self.optimizers.zero_grad_all()
         cpu_or_cuda_str = self.device.split(":")[0]
-        with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
-            _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
-            loss = functools.reduce(torch.add, loss_dict.values())
-        self.grad_scaler.scale(loss).backward()  # type: ignore
+        for _ in range(self.config.trainer.accumulate_grad_steps):
+            with torch.autocast(device_type=cpu_or_cuda_str, enabled=self.mixed_precision):
+                _, loss_dict, metrics_dict = self.pipeline.get_train_loss_dict(step=step)
+                loss = functools.reduce(torch.add, loss_dict.values())
+            self.grad_scaler.scale(loss).backward()  # type: ignore
         self.optimizers.optimizer_scaler_step_all(self.grad_scaler)
         self.grad_scaler.update()
         self.optimizers.scheduler_step_all(step)
 
+        # only return the last accumulate_grad_step's loss and metric for logging
         # Merging loss and metrics dict into a single output.
         return loss, loss_dict, metrics_dict
 
-    @check_eval_enabled  # only run this routine when using wandb / tensorboard
+    @check_eval_enabled
     @profiler.time_function
     def eval_iteration(self, step):
         """Run one iteration with different batch/image/all image evaluations depending on step size.
@@ -342,7 +336,7 @@ class Trainer:
             step: Current training step.
         """
         # a batch of eval rays
-        if step_check(step, self.config.trainer.steps_per_eval_batch):
+        if step_check(step, self.config.trainer.steps_per_eval_batch, run_at_zero=self.config.trainer.sanity_check):
             _, eval_loss_dict, eval_metrics_dict = self.pipeline.get_eval_loss_dict(step=step)
             eval_loss = functools.reduce(torch.add, eval_loss_dict.values())
             writer.put_scalar(name="Eval Loss", scalar=eval_loss, step=step)
@@ -350,7 +344,7 @@ class Trainer:
             writer.put_dict(name="Eval Metrics Dict", scalar_dict=eval_metrics_dict, step=step)
 
         # one eval image
-        if step_check(step, self.config.trainer.steps_per_eval_image):
+        if step_check(step, self.config.trainer.steps_per_eval_image, run_at_zero=self.config.trainer.sanity_check):
             with TimeWriter(writer, EventName.TEST_RAYS_PER_SEC, write=False) as test_t:
                 metrics_dict, images_dict = self.pipeline.get_eval_image_metrics_and_images(step=step)
             writer.put_time(
@@ -366,5 +360,5 @@ class Trainer:
 
         # all eval images
         if step_check(step, self.config.trainer.steps_per_eval_all_images):
-            metrics_dict = self.pipeline.get_average_eval_image_metrics(step=step)
+            metrics_dict, _ = self.pipeline.get_average_eval_image_metrics(step=step)
             writer.put_dict(name="Eval Images Metrics Dict (all images)", scalar_dict=metrics_dict, step=step)

@@ -1,0 +1,4 @@
+:job_id:01000000
+:task_name:extract_and_match
+Loaded SuperPoint model
+Loaded SuperGlue model ("outdoor" weights)

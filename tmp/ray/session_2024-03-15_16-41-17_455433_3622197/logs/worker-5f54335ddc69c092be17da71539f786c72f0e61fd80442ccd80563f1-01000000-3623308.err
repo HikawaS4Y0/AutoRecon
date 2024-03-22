@@ -1,0 +1,27 @@
+:job_id:01000000
+:actor_name:SparseReconActor
+[2024/03/15 16:42:18 hloc INFO] Creating an empty database...
+[2024/03/15 16:42:19 hloc INFO] Importing images into the database...
+[2024/03/15 16:42:20 hloc INFO] Importing features into the database...
+  0%|          | 0/40 [00:00<?, ?it/s]100%|██████████| 40/40 [00:00<00:00, 2087.32it/s]
+[2024/03/15 16:42:20 hloc INFO] Importing matches into the database...
+  0%|          | 0/440 [00:00<?, ?it/s] 31%|███       | 135/440 [00:00<00:00, 1344.90it/s] 66%|██████▌   | 291/440 [00:00<00:00, 1467.80it/s]100%|██████████| 440/440 [00:00<00:00, 1483.49it/s]
+[2024/03/15 16:42:21 hloc INFO] Performing geometric verification of the matches...
+[2024/03/15 16:42:22 hloc INFO] Running 3D reconstruction...
+[2024/03/15 16:42:34 hloc INFO] Reconstructed 1 model(s).
+[2024/03/15 16:42:34 hloc INFO] Largest model is #0 with 40 images.
+[2024/03/15 16:42:34 hloc INFO] Reconstruction statistics:
+Reconstruction:
+	num_reg_images = 40
+	num_cameras = 1
+	num_points3D = 3278
+	num_observations = 14191
+	mean_track_length = 4.32916
+	mean_observations_per_image = 354.775
+	mean_reprojection_error = 1.35987
+	num_input_images = 40
+2024-03-15 16:42:34.878 | INFO     | auto_decomp.sfm.sfm:plot_reconstruction:401 - Reconstruction plot saved: data/custom_data_example/kettle/sfm_spp-spg_sequential_np-10_nimgs-40/vis_sfm
+2024-03-15 16:42:51.679 | INFO     | auto_decomp.sfm.sfm:manhattan_alignment:417 - manhattan-aligned sfm model saved: data/custom_data_example/kettle/sfm_spp-spg_sequential_np-10_nimgs-40/manhattan
+2024-03-15 16:42:51.897 | INFO     | auto_decomp.sfm.sfm:plot_reconstruction:401 - Reconstruction plot saved: data/custom_data_example/kettle/sfm_spp-spg_sequential_np-10_nimgs-40/vis_sfm_manhattan
+[32m2024-03-15 16:42:51.898[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36mmanhattan_alignment[0m:[36m252[0m | - [1msfm directory deleted! (data/custom_data_example/kettle/sfm_spp-spg_sequential_np-10_nimgs-40/sfm)[0m
+[32m2024-03-15 16:42:51.907[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36m_run[0m:[36m204[0m | - [1m[job_id:0 | inst_id:custom_data_example/kettle] sparse reconstruction saved![0m

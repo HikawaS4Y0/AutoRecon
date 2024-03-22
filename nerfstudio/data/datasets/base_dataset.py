@@ -11,6 +11,7 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+
 """
 Dataset.
 """
@@ -39,6 +40,7 @@ class InputDataset(Dataset):
         dataparser_outputs: description of where and how to read input images.
         scale_factor: The scaling factor for the dataparser outputs
     """
+
     def __init__(self, dataparser_outputs: DataparserOutputs, scale_factor: float = 1.0):
         super().__init__()
         self._dataparser_outputs = dataparser_outputs
@@ -75,8 +77,7 @@ class InputDataset(Dataset):
         assert image.shape[2] in [3, 4], f"Image shape of {image.shape} is in correct."
         return image
 
-    def get_image(self,
-                  image_idx: int) -> TensorType["image_height", "image_width", "num_channels"]:
+    def get_image(self, image_idx: int) -> TensorType["image_height", "image_width", "num_channels"]:
         """Returns a 3 channel image.
 
         Args:
@@ -85,9 +86,7 @@ class InputDataset(Dataset):
         image = torch.from_numpy(self.get_numpy_image(image_idx).astype("float32") / 255.0)
         if self._dataparser_outputs.alpha_color is not None and image.shape[-1] == 4:
             assert image.shape[-1] == 4
-            image = image[:, :, :3] * image[:, :, -1:] + self._dataparser_outputs.alpha_color * (
-                1.0 - image[:, :, -1:]
-            )
+            image = image[:, :, :3] * image[:, :, -1:] + self._dataparser_outputs.alpha_color * (1.0 - image[:, :, -1:])
         else:
             image = image[:, :, :3]
         return image
@@ -113,9 +112,7 @@ class InputDataset(Dataset):
             data.update(func(image_idx, **data_func_dict["kwargs"]))
         if self.has_masks:
             mask_filepath = self._dataparser_outputs.mask_filenames[image_idx]
-            data["mask"] = get_image_mask_tensor_from_path(
-                filepath=mask_filepath, scale_factor=self.scale_factor
-            )
+            data["mask"] = get_image_mask_tensor_from_path(filepath=mask_filepath, scale_factor=self.scale_factor)
         metadata = self.get_metadata(data)
         data.update(metadata)
         return data
@@ -146,6 +143,7 @@ class GeneralizedDataset(InputDataset):
     Args:
         dataparser_outputs: description of where and how to read input images.
     """
+
     def __init__(self, dataparser_outputs: DataparserOutputs, scale_factor: float = 1.0):
         super().__init__(dataparser_outputs, scale_factor)
 
@@ -153,9 +151,7 @@ class GeneralizedDataset(InputDataset):
         w = None
         all_hw_same = True
         for filename in track(
-            self._dataparser_outputs.image_filenames,
-            transient=True,
-            description="Checking image sizes"
+            self._dataparser_outputs.image_filenames, transient=True, description="Checking image sizes"
         ):
             image = Image.open(filename)
             if h is None:

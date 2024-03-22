@@ -1,0 +1,4 @@
+:job_id:01000000
+:actor_name:FeatureActor
+[32m2024-03-15 16:43:15.080[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36m_extract_and_match[0m:[36m315[0m | - [1mMatching [custom_data_example/toy] w/ (superpoint_aachen, superglue)[0m
+[32m2024-03-15 16:43:52.248[0m | [1mINFO    [0m | [36mauto_decomp.sfm.sfm[0m:[36mrun[0m:[36m301[0m | - [1m[job_id:0 | inst_id:custom_data_example/toy] features & matches saved![0m
