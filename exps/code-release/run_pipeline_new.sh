@@ -17,13 +17,13 @@ python third_party/AutoDecomp/auto_decomp/cli/inference_transformer.py --config-
 
 # Step 2 train nerf model
 # TODO: parse anno_dirname & object_filename from cache
-CUDA_VISIBLE_DEVICES=8 ns-train neus-facto-angelo \
-    --experiment-name neusfacto-wbg-reg_sep-plane-nerf_60k_plane-h-ratio-0.3_demo_cvpr \
+CUDA_VISIBLE_DEVICES=8 ns-train neus-facto-wbg-reg_sep-plane-nerf \
+    --experiment-name toy \
     --vis tensorboard \
     --trainer.steps_per_eval_image 2500 \
     --trainer.steps_per_eval_batch 2500 \
-    --trainer.max_num_iterations 60001 \
-    --trainer.steps_per_save 10000 \
+    --trainer.max_num_iterations 100001 \
+    --trainer.steps_per_save 20000 \
     --pipeline.datamanager.camera_res_scale_factor 0.25 \
     autorecon-data --data $DATA_ROOT/$INST_REL_DIR \
     --anno_dirname 'triangulate_loftr-720000_sequential_np-10/auto-deocomp_sfm-transformer_cvpr' \

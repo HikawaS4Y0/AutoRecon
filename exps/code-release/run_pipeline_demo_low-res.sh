@@ -18,7 +18,7 @@ CUDA_VISIBLE_DEVICES=8
 # reconstruction
 # TODO: parse anno_dirname & object_filename from cache
 # ns-train neus-facto-wbg-reg_sep-plane-nerf \
-ns-train neus-facto-angelo \
+ns-train neus-facto-wbg-reg_sep-plane-nerf \
     --experiment-name neusfacto-wbg-reg_sep-plane-nerf_60k_plane-h-ratio-0.3_demo_cvpr \
     --vis tensorboard \
     --trainer.steps_per_eval_image 2500 \
